@@ -623,8 +623,8 @@ if __name__ == '__main__':
     argv = ["23", "8", "./examples/test/", "./examples/test/dem.tif", "./examples/test/pra2.tif", "forest=./examples/test/forest2.tif", "infra=./examples/test/infra.tif", "flux=0.003" ,  "max_z=270"] #"forest=../runs/open_slope/forest.tif",
     #argv = ['--gui']
     if len(argv) < 1:
-    	print("Too few input arguments!!!")
-    	sys.exit(1)
+        print("Too few input arguments!!!")
+        sys.exit(1)
     if len(argv) == 1 and argv[0] == '--gui':
         Flow_Py_EXEC()
     else:
