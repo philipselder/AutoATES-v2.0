@@ -5,6 +5,7 @@ description = "An automated ATES classification system"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cupy-cuda13x>=13.6.0",
     "gdal",
     "numpy>=2.3.5",
     "pipwin>=0.5.2",
