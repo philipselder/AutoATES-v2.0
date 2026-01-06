@@ -201,6 +201,7 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     with rasterio.open(DEM) as src:
         array = src.read(1)
         profile = src.profile
+        array = array.astype('int16')
         array[np.where(array < -100)] = -9999
         
     cell_size = profile['transform'][0]
@@ -297,6 +298,7 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
             forest = src.read()
             forest = np.where(forest > -100, 0, forest)
 
+    forest = forest.astype('int16')
     forestC = 1/(1+((forest-c)/a)**(2*b))
     # --- Ares with no forest and assigned -9999 will get a really small value which suggest dense forest. This function fixes this, but might have to be adjusted depending on the input dataset.
     forestC[np.where(forestC <= 0.00001)] = 1
