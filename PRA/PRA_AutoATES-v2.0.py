@@ -288,18 +288,23 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
         print("Sending array to windshelter_window function")
 
     # start of commented out code for unit testing
-    data = windshelter_window(radius, prob)
+    # data = windshelter_window(radius, prob)
 
-    print("Saving raster to PRA/windshelter.tif")
-    with rasterio.open(DEM) as src:
-        profile = src.profile
-    profile.update({"dtype": "float32", "nodata": -9999})
+    # print("Saving raster to PRA/windshelter.tif")
+    # with rasterio.open(DEM) as src:
+    #     profile = src.profile
+    # profile.update({"dtype": "float32", "nodata": -9999})
 
-    data = np.nan_to_num(data, nan=-9999)
+    # f.write(f'data before saving to PRA/windshelter.tif: {data}')
 
-    # Save raster to path using meta data from dem.tif (i.e. projection)
-    with rasterio.open('PRA/windshelter.tif', "w", **profile) as dest:
-        dest.write(data)
+    # windshelter = np.nan_to_num(data, nan=-9999)
+
+    # f.write(f'data after saving to PRA/windshelter.tif: \n')
+    # f.write(str(np.unique(windshelter[~np.isnan(windshelter)])))
+
+    # # Save raster to path using meta data from dem.tif (i.e. projection)
+    # with rasterio.open('PRA/windshelter.tif', "w", **profile) as dest:
+    #     dest.write(windshelter)
     # end of commented out code for unit testing
 
     print("Defining Cauchy functions")
@@ -328,6 +333,8 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
         windshelter = windshelter.astype('float16')
 
     windshelterC = 1/(1+((windshelter-c)/a)**(2*b))
+    f.write('After conversion: \n')
+    f.write(str(np.unique(windshelterC[~np.isnan(windshelterC)])))
 
     # --- Define bell curve parameters for forest stem density
     if forest_type in ['stems']:
@@ -370,7 +377,6 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     if forest_type in ['no_forest']:
         with rasterio.open(DEM) as src:
             forest = src.read()
-            # 20260101 PSE - commented out to test for all-zero failure (why are we converting everything above -100 to 0?)
             # forest = np.where(forest > -100, 0, forest)
     forest = forest.astype(np.int16)
     forestC = 1/(1+((forest-c)/a)**(2*b)).astype(np.float32)
@@ -378,8 +384,10 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     forestC[np.where(forestC <= 0.00001)] = 1
 
     slopeC = np.round(slopeC, 5).astype(np.float32)
-    windshelterC = np.round(windshelterC, 5).astype(np.float32)
+    # windshelterC = np.round(windshelterC, 5).astype(np.float32)
     forestC = np.round(forestC, 5).astype(np.float32)
+    f.write('ForestC unique values: \n')
+    f.write(str(np.unique(forestC[np.nonzero(forestC)])))
 
     #######################
     # --- Fuzzy logic operator
@@ -387,19 +395,34 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
 
     print("Starting the Fuzzy Logic Operator")
 
+    f.write('slopeC unique: \n')
+    f.write(str(np.unique(slopeC[np.nonzero(slopeC)])))
+
+    f.write('windshelterC unique: \n')
+    f.write(str(np.unique(windshelterC[np.nonzero(windshelterC)])))
+
+    f.write('forestC unique: \n')
+    f.write(str(np.unique(forestC[np.nonzero(forestC)])))
+
     minvar = np.minimum(slopeC, windshelterC)
     minvar = np.minimum(minvar, forestC)
+    f.write('Before minvar rounding: \n')
+    f.write(str(np.unique(minvar[np.nonzero(minvar)])))
 
     PRA = (1-minvar)*minvar+minvar*(slopeC+windshelterC+forestC)/3
+    f.write('Before PRA rounding: \n')
+    f.write(str(np.unique(PRA[~np.isnan(PRA)])))
     PRA = np.round(PRA, 5)
     PRA = PRA * 100
+    f.write('After PRA rounding: \n')
+    f.write(str(np.unique(PRA[~np.isnan(PRA)])))
 
     # --- Update metadata
     profile.update({'dtype': 'int16', 'nodata': -9999})
 
     # --- Save raster to path using meta data from dem.tif (i.e. projection)
     with rasterio.open('PRA/PRA_continous.tif', "w", **profile) as dest:
-        dest.write(PRA.astype('int16'))
+        dest.write(PRA)
 
     # --- Reclassify PRA to be used as input for FlowPy
     profile.update({'nodata': -9999})
@@ -408,7 +431,7 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     PRA[(pra_thd <= PRA) & (PRA <= 100)] = 1
 
     with rasterio.open('PRA/PRA_binary.tif', "w", **profile) as dest:
-        dest.write(PRA.astype('int16'))
+        dest.write(PRA)
 
     # --- Remove islands smaller than 3 pixels
     sievefilter = sf + 1
