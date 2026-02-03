@@ -288,23 +288,23 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
         print("Sending array to windshelter_window function")
 
     # start of commented out code for unit testing
-    # data = windshelter_window(radius, prob)
+    data = windshelter_window(radius, prob)
 
-    # print("Saving raster to PRA/windshelter.tif")
-    # with rasterio.open(DEM) as src:
-    #     profile = src.profile
-    # profile.update({"dtype": "float32", "nodata": -9999})
+    print("Saving raster to PRA/windshelter.tif")
+    with rasterio.open(DEM) as src:
+        profile = src.profile
+    profile.update({"dtype": "float32", "nodata": -9999})
 
-    # f.write(f'data before saving to PRA/windshelter.tif: {data}')
+    f.write(f'data before saving to PRA/windshelter.tif: {data}')
 
-    # windshelter = np.nan_to_num(data, nan=-9999)
+    windshelter = np.nan_to_num(data, nan=-9999)
 
-    # f.write(f'data after saving to PRA/windshelter.tif: \n')
-    # f.write(str(np.unique(windshelter[~np.isnan(windshelter)])))
+    f.write(f'data after saving to PRA/windshelter.tif: \n')
+    f.write(str(np.unique(windshelter[~np.isnan(windshelter)])))
 
-    # # Save raster to path using meta data from dem.tif (i.e. projection)
-    # with rasterio.open('PRA/windshelter.tif', "w", **profile) as dest:
-    #     dest.write(windshelter)
+    # Save raster to path using meta data from dem.tif (i.e. projection)
+    with rasterio.open('PRA/windshelter.tif', "w", **profile) as dest:
+        dest.write(windshelter)
     # end of commented out code for unit testing
 
     print("Defining Cauchy functions")
