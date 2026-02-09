@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "cupy-cuda13x>=13.6.0",
     "gdal",
+    "numba>=0.63.1",
     "numpy>=2.3.5",
     "pipwin>=0.5.2",
     "psutil>=7.1.3",
