@@ -96,6 +96,71 @@ Output: Binary PRA map (larger, more connected)
 
 ### Installation Requirements
 
+#### Option 1: Using `uv` (Recommended)
+
+`uv` is a fast Python package manager written in Rust. It provides significantly faster dependency resolution and installation.
+
+**Step 1: Download and Install `uv`**
+
+- **Windows**: Download the installer from [uv's official releases](https://github.com/astral-sh/uv/releases) or use:
+  ```bash
+  powershell -Command "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+
+- **macOS/Linux**: 
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+- **Verify installation**:
+  ```bash
+  uv --version
+  ```
+
+**Step 2: Initialize `uv` for this directory**
+
+```bash
+uv sync
+```
+
+This command reads the project dependencies and creates a virtual environment with all required packages.
+
+**Step 3: Activate the virtual environment**
+
+- **Windows**:
+  ```bash
+  .venv\Scripts\activate
+  ```
+
+- **macOS/Linux**:
+  ```bash
+  source .venv/bin/activate
+  ```
+
+#### Option 2: Using `pip` (Fallback)
+
+If you cannot use `uv` for any reason, you can use pip instead:
+
+**Step 1: Create a virtual environment** (recommended)
+
+```bash
+python -m venv venv
+```
+
+**Step 2: Activate the virtual environment**
+
+- **Windows**:
+  ```bash
+  venv\Scripts\activate
+  ```
+
+- **macOS/Linux**:
+  ```bash
+  source venv/bin/activate
+  ```
+
+**Step 3: Install dependencies**
+
 ```bash
 pip install numpy rasterio scipy
 ```
