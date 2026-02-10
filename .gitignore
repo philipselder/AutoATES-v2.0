@@ -1,0 +1,12 @@
+# Ignore virtual environment directory for Python projects
+.venv/
+
+# Other common entries to include in a Python project gitignore:
+# Compiled Python files
+*.pyc
+
+# Editor-specific files (VS Code)
+.vscode/
+
+# Environment variables file
+.env
