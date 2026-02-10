@@ -10,3 +10,16 @@
 
 # Environment variables file
 .env
+
+# GIS Data Files - Large raster and output files
+*.tif
+*.tiff
+*.ovr
+*.aux.xml
+*.zip
+OBIA_outputs/
+PRA/windshelter*.tif*
+PRA/AP_*.tif*
+PRA/Inputs/*.tif*
+PRA/Outputs/*.tif*
+test-data/*/outputs/
