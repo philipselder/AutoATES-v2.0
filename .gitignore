@@ -1,5 +1,6 @@
 # Ignore virtual environment directory for Python projects
 .venv/
+data/
 
 # Other common entries to include in a Python project gitignore:
 # Compiled Python files
