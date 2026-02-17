@@ -1,0 +1,26 @@
+# Ignore virtual environment directory for Python projects
+.venv/
+data/
+
+# Other common entries to include in a Python project gitignore:
+# Compiled Python files
+*.pyc
+
+# Editor-specific files (VS Code)
+.vscode/
+
+# Environment variables file
+.env
+
+# GIS Data Files - Large raster and output files
+*.tif
+*.tiff
+*.ovr
+*.aux.xml
+*.zip
+OBIA_outputs/
+PRA/windshelter*.tif*
+PRA/AP_*.tif*
+PRA/Inputs/*.tif*
+PRA/Outputs/*.tif*
+test-data/*/outputs/

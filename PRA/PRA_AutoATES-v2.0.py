@@ -53,11 +53,14 @@ from numpy.lib.stride_tricks import as_strided
 from collections import deque
 import sys
 from datetime import datetime
+import cupy as cp
+from numpy.lib.stride_tricks import as_strided as np_as_strided
+from cupy.lib.stride_tricks import as_strided as cp_as_strided
 
 # --- Example
 # stems (10m raster):       python PRA/PRA_AutoATES-v2.0.py stems PRA/DEM.tif PRA/FOREST.tif 6 0.5 0 180 0.15 3
 # no_forest (10m raster):   python PRA/PRA_AutoATES-v2.0.py no_forest PRA/DEM.tif 6 0.5 0 180 0.15 3
-
+# PSE - testing: .venv/Scripts/python.exe PRA/PRA_AutoATES-v2.0.py pcc PRA/AP_DEM_Clip.tif PRA/AP_Canopy.tif 60 0.5 0 180 0.15 3
 def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     
     ##########################
@@ -93,28 +96,34 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     #########################
 
     def sliding_window_view(arr, window_shape, steps):
-        """ 
-        Produce a view from a sliding, striding window over `arr`.
-        The window is only placed in 'valid' positions - no overlapping
-        over the boundary
         """
+        Create a sliding window view of an array.
+        The window moves by `steps` in each dimension.
+        """
+        # Determine whether to use numpy or cupy
+        xp = cp.get_array_module(arr)
+        as_strided = cp_as_strided if xp == cp else np_as_strided
 
-        in_shape = np.array(arr.shape[-len(steps):])  # [x, (...), z]
-        window_shape = np.array(window_shape)  # [Wx, (...), Wz]
-        steps = np.array(steps)  # [Sx, (...), Sz]
-        nbytes = arr.strides[-1]  # size (bytes) of an element in `arr`
+        in_shape = arr.shape
+        nbytes = arr.dtype.itemsize
 
         # number of per-byte steps to take to fill window
-        window_strides = tuple(np.cumprod(arr.shape[:0:-1])[::-1]) + (1,)
+        window_strides_arr = xp.cumprod(xp.array(arr.shape[:0:-1]))[::-1]
+        window_strides = tuple(window_strides_arr.tolist()) + (1,)
+
         # number of per-byte steps to take to place window
-        step_strides = tuple(window_strides[-len(steps):] * steps)
+        step_strides = tuple(xp.array(window_strides[-len(steps):]) * xp.array(steps))
         # number of bytes to step to populate sliding window view
         strides = tuple(int(i) * nbytes for i in step_strides + window_strides)
 
-        outshape = tuple((in_shape - window_shape) // steps + 1)
+        outshape_arr = (xp.array(in_shape) - xp.array(window_shape)) // xp.array(steps) + 1
         # outshape: ([X, (...), Z], ..., [Wx, (...), Wz])
+        outshape = tuple(outshape_arr.tolist())
         outshape = outshape + arr.shape[:-len(steps)] + tuple(window_shape)
-        return as_strided(arr, shape=outshape, strides=strides, writeable=False)
+        if xp == cp:
+            return as_strided(arr, shape=outshape, strides=strides)
+        else:
+            return as_strided(arr, shape=outshape, strides=strides, writeable=False)
 
     def sector_mask(shape,centre,radius,angle_range): # used in windshelter_prep
         """
@@ -172,25 +181,75 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     def windshelter_window(radius, prob):
 
         dist, mask = windshelter_prep(radius, winddir - windtol + 270, winddir + windtol + 270, cell_size)
-        window = sliding_window_view(array[-1], ((radius*2)+1,(radius*2)+1), (1, 1))
+        
+        # --- Move dist and mask to GPU
+        dist_cp = cp.asarray(dist)
+        mask_cp = cp.asarray(mask)
 
-        nc = window.shape[0]
-        nr = window.shape[1]
-        ws = deque()
+        # --- Create window view on the GPU array directly
+        window_shape = ((radius*2)+1, (radius*2)+1)
+        window = sliding_window_view(cp_array_windshelter[-1], window_shape, (1, 1))
 
-        for i in range(nc):
-            for j in range(nr):
-                data = window[i, j]
-                data = windshelter(data, prob, dist, mask, radius).tolist()
-                ws.append(data)
+        nc, nr = window.shape[0], window.shape[1]
+        print("Bounds of windshelter window:")
+        print(str(nc))
+        print(str(nr))
+        print("Processing windows on GPU...")
 
-        data = np.array(ws)
-        data = data.reshape(nc, nr)
-        data = np.pad(data, pad_width=radius, mode='constant', constant_values=-9999)
+        # --- Vectorized windshelter calculation on GPU ---
+        # Reshape mask for broadcasting
+        mask_cp = mask_cp.reshape(1, 1, mask_cp.shape[0], mask_cp.shape[1])
+        
+        # --- Batch processing to avoid out-of-memory errors ---
+        batch_size_i = 128  # Adjust this based on your GPU memory
+        batch_size_j = 128 # Adjust this based on your GPU memory
+        ws = cp.empty((nc, nr), dtype=cp.float32)
+
+        for i in range(0, nc, batch_size_i):
+            end_i = min(i + batch_size_i, nc)
+            print(f"processing batch starting at {str(i)}")
+            for j in range(0, nr, batch_size_j):
+                end_j = min(j + batch_size_j, nr)
+                window_batch = window[i:end_i, j:end_j] # Batch of windows
+
+                # Apply mask to the batch
+                data = window_batch * mask_cp
+                
+                # Set nodata and 0 values to NaN
+                data[data == profile['nodata']] = cp.nan
+                data[data == 0] = cp.nan
+                
+                # Extract center pixel value for each window in the batch
+                center = data[:, :, radius, radius].copy()
+                
+                # Set center pixel in each window to NaN
+                data[:, :, radius, radius] = cp.nan
+                
+                # Reshape center to allow broadcasting for subtraction
+                center_reshaped = center[:, :, cp.newaxis, cp.newaxis]
+                
+                # Perform arctan calculation for the batch
+                data = cp.arctan((data - center_reshaped) / dist_cp)
+                
+                # Calculate quantile for the batch and store it
+                ws[i:end_i, j:end_j] = cp.quantile(data, prob, axis=(-2, -1))
+
+                # Clean up GPU memory
+                del window_batch, data, center, center_reshaped
+                cp.get_default_memory_pool().free_all_blocks()
+
+        # --- End of vectorized calculation ---
+
+        ws_cpu = ws.get()
+        del ws
+        cp.get_default_memory_pool().free_all_blocks()
+
+        data = np.pad(ws_cpu, pad_width=radius, mode='constant', constant_values=-9999)
         data = data.reshape(1, data.shape[0], data.shape[1])
         data = data.astype('float32')
         
         return data
+
 
     #######################
     # Calculate slope and windshelter
@@ -200,18 +259,22 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
 
     with rasterio.open(DEM) as src:
         array = src.read(1)
+        # PSE - converted dem array to int for larger datasets
+        array = array.astype('int')
         profile = src.profile
-        array = array.astype('int16')
-        array[np.where(array < -100)] = -9999
+        array[np.where(array < -100)] = 0
+        # cp_array_slope = cp.asarray(array)
         
     cell_size = profile['transform'][0]
 
     # Evaluate gradient in two dimensions
+    
     px, py = np.gradient(array, cell_size)
     slope = np.sqrt(px ** 2 + py ** 2)
 
     # If needed in degrees, convert using
     slope_deg = np.degrees(np.arctan(slope))
+    slope_deg = slope_deg.astype(np.float32)
 
     print("Calculating windshelter")
 
@@ -219,19 +282,30 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
     with rasterio.open(DEM) as src:
         array = src.read()
         array = array.astype('float')
+        cp_array_windshelter = cp.asarray(array)
         profile = src.profile
         cell_size = profile['transform'][0]
+        print("Sending array to windshelter_window function")
+
+    # start of commented out code for unit testing
     data = windshelter_window(radius, prob)
 
+    print("Saving raster to PRA/windshelter.tif")
     with rasterio.open(DEM) as src:
         profile = src.profile
     profile.update({"dtype": "float32", "nodata": -9999})
 
-    data = np.nan_to_num(data, nan=-9999)
+    f.write(f'data before saving to PRA/windshelter.tif: {data}')
+
+    windshelter = np.nan_to_num(data, nan=-9999)
+
+    f.write(f'data after saving to PRA/windshelter.tif: \n')
+    f.write(str(np.unique(windshelter[~np.isnan(windshelter)])))
 
     # Save raster to path using meta data from dem.tif (i.e. projection)
     with rasterio.open('PRA/windshelter.tif', "w", **profile) as dest:
-        dest.write(data)
+        dest.write(windshelter)
+    # end of commented out code for unit testing
 
     print("Defining Cauchy functions")
 
@@ -256,8 +330,11 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
 
     with rasterio.open("PRA/windshelter.tif") as src:
         windshelter = src.read()
+        windshelter = windshelter.astype('float16')
 
     windshelterC = 1/(1+((windshelter-c)/a)**(2*b))
+    f.write('After conversion: \n')
+    f.write(str(np.unique(windshelterC[~np.isnan(windshelterC)])))
 
     # --- Define bell curve parameters for forest stem density
     if forest_type in ['stems']:
@@ -289,23 +366,28 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
         if forest_type in ['no_forest']:
             f.write("No forest input given\n")
 
-    if forest_type in ['pcc', 'stems']:
+    if forest_type in ['pcc', 'stems', 'bav']:
+        with rasterio.open(DEM) as dem_src:
+            dem_profile = dem_src.profile
         with rasterio.open(FOREST) as src:
-            forest = src.read()
+            with rasterio.vrt.WarpedVRT(src, crs=dem_profile['crs'], transform=dem_profile['transform'], width=dem_profile['width'], height=dem_profile['height']) as vrt:
+                forest = vrt.read()
 
+    
     if forest_type in ['no_forest']:
         with rasterio.open(DEM) as src:
             forest = src.read()
-            forest = np.where(forest > -100, 0, forest)
-
-    forest = forest.astype('int16')
-    forestC = 1/(1+((forest-c)/a)**(2*b))
+            # forest = np.where(forest > -100, 0, forest)
+    forest = forest.astype(np.int16)
+    forestC = 1/(1+((forest-c)/a)**(2*b)).astype(np.float32)
     # --- Ares with no forest and assigned -9999 will get a really small value which suggest dense forest. This function fixes this, but might have to be adjusted depending on the input dataset.
     forestC[np.where(forestC <= 0.00001)] = 1
 
-    slopeC = np.round(slopeC, 5)
-    windshelterC = np.round(windshelterC, 5)
-    forestC = np.round(forestC, 5)
+    slopeC = np.round(slopeC, 5).astype(np.float32)
+    # windshelterC = np.round(windshelterC, 5).astype(np.float32)
+    forestC = np.round(forestC, 5).astype(np.float32)
+    f.write('ForestC unique values: \n')
+    f.write(str(np.unique(forestC[np.nonzero(forestC)])))
 
     #######################
     # --- Fuzzy logic operator
@@ -313,28 +395,43 @@ def PRA(forest_type, DEM, FOREST, radius, prob, winddir, windtol, pra_thd, sf):
 
     print("Starting the Fuzzy Logic Operator")
 
+    f.write('slopeC unique: \n')
+    f.write(str(np.unique(slopeC[np.nonzero(slopeC)])))
+
+    f.write('windshelterC unique: \n')
+    f.write(str(np.unique(windshelterC[np.nonzero(windshelterC)])))
+
+    f.write('forestC unique: \n')
+    f.write(str(np.unique(forestC[np.nonzero(forestC)])))
+
     minvar = np.minimum(slopeC, windshelterC)
     minvar = np.minimum(minvar, forestC)
+    f.write('Before minvar rounding: \n')
+    f.write(str(np.unique(minvar[np.nonzero(minvar)])))
 
     PRA = (1-minvar)*minvar+minvar*(slopeC+windshelterC+forestC)/3
+    f.write('Before PRA rounding: \n')
+    f.write(str(np.unique(PRA[~np.isnan(PRA)])))
     PRA = np.round(PRA, 5)
     PRA = PRA * 100
+    f.write('After PRA rounding: \n')
+    f.write(str(np.unique(PRA[~np.isnan(PRA)])))
 
     # --- Update metadata
     profile.update({'dtype': 'int16', 'nodata': -9999})
 
     # --- Save raster to path using meta data from dem.tif (i.e. projection)
     with rasterio.open('PRA/PRA_continous.tif', "w", **profile) as dest:
-        dest.write(PRA.astype('int16'))
+        dest.write(PRA)
 
     # --- Reclassify PRA to be used as input for FlowPy
     profile.update({'nodata': -9999})
     pra_thd = pra_thd * 100
-    PRA[np.where((0 <= PRA) & (PRA < pra_thd))] = 0
-    PRA[np.where((pra_thd < PRA) & (PRA <= 100))] = 1
+    PRA[(0 <= PRA) & (PRA < pra_thd)] = 0
+    PRA[(pra_thd <= PRA) & (PRA <= 100)] = 1
 
     with rasterio.open('PRA/PRA_binary.tif', "w", **profile) as dest:
-        dest.write(PRA.astype('int16'))
+        dest.write(PRA)
 
     # --- Remove islands smaller than 3 pixels
     sievefilter = sf + 1
