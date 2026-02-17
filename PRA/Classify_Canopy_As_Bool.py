@@ -56,4 +56,4 @@ def reclassify_raster_by_threshold_gdal(input_path, output_path, threshold):
     
     print(f"Reclassified raster saved to {output_path}")
 
-reclassify_raster_by_threshold_gdal(r'D:\Phil\PhD\DEM\North_ArthursPass\AP_Canopy_5m.tif', r'D:\Phil\PhD\AutoATES-v2.0\data\Inputs\AP_Canopy_Bool_5m.tif', threshold=1.5)
+reclassify_raster_by_threshold_gdal(r'D:\Phil\PhD\DEM\South_Craigieburn\CB_Canopy_5m.tif', r'D:\Phil\PhD\AutoATES-v2.0\data\Inputs\CB_Canopy_Bool_5m.tif', threshold=10)
