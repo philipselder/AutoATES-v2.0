@@ -7,12 +7,14 @@ from pathlib import Path
 import numpy as np
 import streamlit as st
 
+# cmd to initialize: uv run streamlit app/streamlit_app.py
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PRA.PRA_Buhler_OBIA import OBIAPRADelineation
+from engine.ATES.PRA.PRA_Buhler_OBIA import OBIAPRADelineation
 
 
 def _save_uploaded_file(uploaded_file):
@@ -65,37 +67,15 @@ def _run_custom_pra(
     min_area_m2,
     cluster_tolerance_cells,
 ):
-    if obia.slope is None:
-        obia.calculate_slope()
-    if obia.aspect is None:
-        obia.calculate_aspect()
-    if obia.plan_curvature is None:
-        obia.calculate_curvature()
-    if obia.ruggedness is None:
-        obia.calculate_ruggedness()
-    if obia.fold is None:
-        obia.calculate_fold()
-
-    slope_mask = (obia.slope >= slope_min) & (obia.slope <= slope_max)
-    ruggedness_mask = obia.ruggedness <= ruggedness_limit
-    curvature_mask = np.abs(obia.plan_curvature) <= plan_curvature_limit
-
-    mask = slope_mask & ruggedness_mask & curvature_mask
-    mask = obia.remove_small_objects(
-        mask.astype(np.uint8),
-        min_size_m2=min_area_m2,
+    """Wrapper function to call the OBIA delineate_pra_custom method"""
+    return obia.delineate_pra_custom(
+        slope_min=slope_min,
+        slope_max=slope_max,
+        ruggedness_limit=ruggedness_limit,
+        plan_curvature_limit=plan_curvature_limit,
+        min_area_m2=min_area_m2,
         cluster_tolerance_cells=cluster_tolerance_cells,
     )
-
-    if obia.forest is not None:
-        mask = obia._apply_forest_mask(mask)
-
-    output_path = obia.save_raster(
-        mask.astype(float),
-        "PRA_custom_scenario.tif",
-        "(custom scenario, 1=PRA, 0=NoPRA)",
-    )
-    return output_path
 
 
 st.set_page_config(page_title="AutoATES PRA", layout="centered")
@@ -114,9 +94,7 @@ with st.expander("Input rasters", expanded=True):
         "Or select forest cover .tif", type=["tif", "tiff"]
     )
 
-output_dir = REPO_ROOT / "PRA" / "OBIA_outputs"
-
-st.caption(f"Outputs will be saved to: {output_dir}")
+st.caption(r"Outputs will be saved to: {REPO_ROOT}\cache\ATES\PRA".format(REPO_ROOT=REPO_ROOT))
 
 col1, col2, col3 = st.columns(3)
 
@@ -147,21 +125,19 @@ if frequent_clicked or extreme_clicked:
                 obia = OBIAPRADelineation(
                     dem_path,
                     forest_path=forest_path or None,
-                    output_dir=str(output_dir),
                 )
 
                 if frequent_clicked:
                     output = obia.delineate_pra_frequent()
                     st.success("Frequent PRA generated.")
+                    output_file = "PRA_frequent_scenario.tif"
                 else:
                     output = obia.delineate_pra_extreme()
                     st.success("Extreme PRA generated.")
+                    output_file = "PRA_extreme_scenario.tif"
 
                 st.write("Output saved to:")
-                if frequent_clicked:
-                    st.write(str(output_dir / "PRA_frequent_scenario.tif"))
-                else:
-                    st.write(str(output_dir / "PRA_extreme_scenario.tif"))
+                st.write(os.path.join(obia.output_dir, output_file))
 
 if st.session_state.show_custom:
     st.subheader("Custom PRA parameters")
@@ -194,7 +170,6 @@ if st.session_state.show_custom:
                     obia = OBIAPRADelineation(
                         dem_path,
                         forest_path=forest_path or None,
-                        output_dir=str(output_dir),
                     )
                     output_path = _run_custom_pra(
                         obia,

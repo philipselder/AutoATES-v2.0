@@ -36,7 +36,7 @@ warnings.filterwarnings('ignore')
 from scipy import ndimage
 from scipy.ndimage import gaussian_filter, uniform_filter
 import os
-import hashlib
+from pathlib import Path
 from datetime import datetime
 from multiprocessing import Pool
 import math
@@ -59,7 +59,7 @@ class OBIAPRADelineation:
     Object-Based Image Analysis for Potential Release Area Delineation
     """
     
-    def __init__(self, dem_path, forest_path=None, output_dir='./OBIA_outputs', use_gpu=False):
+    def __init__(self, dem_path, forest_path=None, use_gpu=False):
         """
         Initialize the OBIA algorithm
         
@@ -69,21 +69,28 @@ class OBIAPRADelineation:
             Path to the input DEM raster (GeoTIFF, 5m resolution)
         forest_path : str, optional
             Path to forest mask (binary raster)
-        output_dir : str
-            Directory to save output rasters
         use_gpu : bool
             If True, attempts to use GPU acceleration (requires CuPy)
         """
         self.dem_path = dem_path
         self.forest_path = forest_path
-        self.output_dir = output_dir
         self.use_gpu = use_gpu
         
-        # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
+        # Find root directory (3 folders up from this file location)
+        # File is at: <root>/engine/ATES/PRA/PRA_Buhler_OBIA.py
+        current_file = Path(__file__).resolve()
+        root_dir = current_file.parents[3]
+        
+        # Set output and log directories relative to root
+        self.output_dir = str(root_dir / "cache" / "ATES" / "PRA")
+        log_dir = str(root_dir / "log")
+        
+        # Create directories
+        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=True)
         
         # Initialize log file
-        self.log_file = os.path.join(output_dir, 'OBIA_processing_log.txt')
+        self.log_file = os.path.join(log_dir, 'OBIA_processing_log.txt')
         self.log("=" * 60)
         self.log(f"OBIA PRA Delineation started at {datetime.now()}")
         self.log("=" * 60)
@@ -106,6 +113,10 @@ class OBIAPRADelineation:
                 self.log("GPU mode requested but CuPy not installed. Using CPU.")
         else:
             self.cupy = None
+        
+        # Extract DEM prefix (part before first underscore)
+        dem_filename = Path(dem_path).stem
+        self.dem_prefix = dem_filename.split('_')[0] if '_' in dem_filename else dem_filename
         
         # Load DEM
         self.load_dem()
@@ -156,6 +167,38 @@ class OBIAPRADelineation:
         
         self.log(f"Forest mask loaded: shape={self.forest.shape}")
     
+    def _generate_filename(self, base_name, params=None):
+        """
+        Generate filename with DEM prefix and parameter hash
+        
+        Parameters:
+        -----------
+        base_name : str
+            Base name for the file (e.g., 'slope_angle', 'PRA_frequent_scenario')
+        params : dict, optional
+            Dictionary of parameters to include in filename
+        
+        Returns:
+        --------
+        filename : str
+            Generated filename with parameters and hash
+        """
+        import hashlib
+        
+        filename_parts = [self.dem_prefix, base_name]
+        
+        # Add parameters if provided
+        if params:
+            param_str = '__'.join([f"{k}={v}" for k, v in sorted(params.items())])
+            filename_parts.append(param_str)
+            
+            # Generate short hash of parameters
+            param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
+            filename_parts.append(f"p{param_hash}")
+        
+        filename = '__'.join(filename_parts) + '.tif'
+        return filename
+    
     def save_raster(self, data, filename, description=""):
         """
         Save array as GeoTIFF raster
@@ -184,123 +227,38 @@ class OBIAPRADelineation:
         
         self.log(f"Saved: {filename} {description}")
         return output_path
-
-    def _load_raster_if_exists(self, filename):
+    
+    def _load_cached_raster(self, filename):
         """
-        Load a raster from the output directory if it exists.
-
+        Load a cached raster if it exists
+        
+        Parameters:
+        -----------
+        filename : str
+            Filename to check and load
+        
         Returns:
         --------
         data : np.ndarray or None
-            Array with nodata converted to NaN, or None if missing.
+            Loaded data if file exists, None otherwise
         """
         output_path = os.path.join(self.output_dir, filename)
-        if not os.path.exists(output_path):
-            return None
-
-        with rasterio.open(output_path) as src:
-            data = src.read(1).astype(np.float32)
-            nodata = src.nodata
-
-        if nodata is not None:
-            data[data == nodata] = np.nan
-
-        self.log(f"Loaded cached output: {filename}")
-        return data
-
-    def _cache_filename(self, base_filename, params=None):
-        """
-        Build a cache filename that encodes parameters via a short hash.
-
-        Parameters:
-        -----------
-        base_filename : str
-            Base output filename (e.g., 'slope_angle.tif')
-        params : dict, optional
-            Parameters to encode in the filename
-
-        Returns:
-        --------
-        filename : str
-            Cache filename with parameter hash
-        """
-        if not params:
-            return base_filename
-
-        items = sorted(params.items())
-        param_str = "_".join([f"{key}={value}" for key, value in items])
-        hash_suffix = hashlib.sha1(param_str.encode("utf-8")).hexdigest()[:8]
-
-        base, ext = os.path.splitext(base_filename)
-        return f"{base}__{param_str}__p{hash_suffix}{ext}"
-
-    def cleanup_cached_derivatives(
-        self,
-        filter_size=5,
-        ruggedness_window_size=9,
-        fold_window_size=3,
-        keep_current=True,
-    ):
-        """
-        Remove stale cached derivative rasters with parameter hashes.
-
-        Parameters:
-        -----------
-        filter_size : int
-            Slope filter size used to keep the current cache
-        ruggedness_window_size : int
-            Ruggedness window size used to keep the current cache
-        fold_window_size : int
-            Fold window size used to keep the current cache
-        keep_current : bool
-            If True, keep caches for the provided parameters
-        """
-        if not os.path.isdir(self.output_dir):
-            self.log("Cache cleanup skipped: output directory missing.")
-            return
-
-        keep = set()
-        if keep_current:
-            keep.add(self._cache_filename('slope_angle.tif', {"filter_size": filter_size}))
-            keep.add(self._cache_filename('ruggedness.tif', {"window_size": ruggedness_window_size}))
-            keep.add(self._cache_filename('fold.tif', {"window_size": fold_window_size}))
-
-        # These are not parameterized and are always safe to keep.
-        keep.update(
-            {
-                'aspect_degrees.tif',
-                'aspect_sectors.tif',
-                'plan_curvature.tif',
-                'profile_curvature.tif',
-            }
-        )
-
-        base_prefixes = (
-            'slope_angle__',
-            'ruggedness__',
-            'fold__',
-        )
-
-        removed = 0
-        for filename in os.listdir(self.output_dir):
-            if not filename.endswith('.tif'):
-                continue
-            if filename in keep:
-                continue
-            if filename.startswith(base_prefixes) and '__p' in filename:
-                try:
-                    os.remove(os.path.join(self.output_dir, filename))
-                    removed += 1
-                except OSError as exc:
-                    self.log(f"Failed to remove cache file {filename}: {exc}")
-
-        self.log(f"Cache cleanup completed. Removed {removed} files.")
+        
+        if os.path.exists(output_path):
+            self.log(f"Loading cached file: {filename}")
+            with rasterio.open(output_path) as src:
+                data = src.read(1).astype(np.float32)
+                # Replace nodata with NaN
+                data[data == -9999] = np.nan
+            return data
+        
+        return None
     
     # =========================================================================
     # TERRAIN DERIVATIVE CALCULATIONS
     # =========================================================================
     
-    def calculate_slope(self, filter_size=5, force_recompute=False):
+    def calculate_slope(self, filter_size=5):
         """
         Calculate slope angle from DEM
         
@@ -312,20 +270,19 @@ class OBIAPRADelineation:
         -----------
         filter_size : int
             Size of the mean filter kernel (default 5x5)
-        force_recompute : bool
-            If True, skip cache and recompute (default False)
         
         Returns:
         --------
         slope : np.ndarray
             Slope angle in degrees
         """
-        slope_filename = self._cache_filename('slope_angle.tif', {"filter_size": filter_size})
-        cached = None if force_recompute else self._load_raster_if_exists(slope_filename)
-        if cached is not None:
-            self.slope = cached
+        # Check for cached file
+        filename = self._generate_filename('slope_angle', {'filter_size': filter_size})
+        cached_data = self._load_cached_raster(filename)
+        if cached_data is not None:
+            self.slope = cached_data
             return self.slope
-
+        
         self.log("\nCalculating slope angle...")
         
         dem = self.dem.copy()
@@ -343,7 +300,8 @@ class OBIAPRADelineation:
         slope_filtered = self._apply_distance_weighted_filter(slope_deg, filter_size)
         
         self.slope = slope_filtered
-        self.save_raster(self.slope, slope_filename, 
+        filename = self._generate_filename('slope_angle', {'filter_size': filter_size})
+        self.save_raster(self.slope, filename, 
                         f"(mean={np.nanmean(self.slope):.2f}°)")
         
         return self.slope
@@ -377,7 +335,7 @@ class OBIAPRADelineation:
         
         return filtered
     
-    def calculate_aspect(self, force_recompute=False):
+    def calculate_aspect(self):
         """
         Calculate aspect (slope direction) from DEM
         
@@ -389,13 +347,17 @@ class OBIAPRADelineation:
         aspect : np.ndarray
             Aspect in degrees (0-360) or classified sectors (0-7)
         """
-        cached_aspect = None if force_recompute else self._load_raster_if_exists('aspect_degrees.tif')
-        cached_sectors = None if force_recompute else self._load_raster_if_exists('aspect_sectors.tif')
-        if cached_aspect is not None and cached_sectors is not None:
-            self.aspect = cached_aspect
+        # Check for cached files
+        filename_deg = self._generate_filename('aspect_degrees')
+        filename_sectors = self._generate_filename('aspect_sectors')
+        cached_deg = self._load_cached_raster(filename_deg)
+        cached_sectors = self._load_cached_raster(filename_sectors)
+        
+        if cached_deg is not None and cached_sectors is not None:
+            self.aspect = cached_deg
             self.aspect_sectors = cached_sectors
             return self.aspect, self.aspect_sectors
-
+        
         self.log("\nCalculating aspect...")
         
         dem = self.dem.copy()
@@ -419,14 +381,16 @@ class OBIAPRADelineation:
         self.aspect = aspect_deg
         self.aspect_sectors = aspect_sectors
         
-        self.save_raster(self.aspect, 'aspect_degrees.tif',
+        filename_deg = self._generate_filename('aspect_degrees')
+        self.save_raster(self.aspect, filename_deg,
                         f"(mean={np.nanmean(self.aspect):.2f}°)")
-        self.save_raster(self.aspect_sectors.astype(float), 'aspect_sectors.tif',
+        filename_sectors = self._generate_filename('aspect_sectors')
+        self.save_raster(self.aspect_sectors.astype(float), filename_sectors,
                         "(8 sectors: 0=N, 1=NE, 2=E, 3=SE, 4=S, 5=SW, 6=W, 7=NW)")
         
         return self.aspect, self.aspect_sectors
     
-    def calculate_curvature(self, force_recompute=False):
+    def calculate_curvature(self):
         """
         Calculate plan and profile curvature
         
@@ -442,13 +406,17 @@ class OBIAPRADelineation:
         profile_curvature : np.ndarray
             Profile curvature values
         """
-        cached_plan = None if force_recompute else self._load_raster_if_exists('plan_curvature.tif')
-        cached_profile = None if force_recompute else self._load_raster_if_exists('profile_curvature.tif')
+        # Check for cached files
+        filename_plan = self._generate_filename('plan_curvature')
+        filename_profile = self._generate_filename('profile_curvature')
+        cached_plan = self._load_cached_raster(filename_plan)
+        cached_profile = self._load_cached_raster(filename_profile)
+        
         if cached_plan is not None and cached_profile is not None:
             self.plan_curvature = cached_plan
             self.profile_curvature = cached_profile
             return self.plan_curvature, self.profile_curvature
-
+        
         self.log("\nCalculating curvature...")
         
         dem = self.dem.copy()
@@ -475,14 +443,16 @@ class OBIAPRADelineation:
         self.plan_curvature = plan_curv * 100
         self.profile_curvature = profile_curv * 100
         
-        self.save_raster(self.plan_curvature, 'plan_curvature.tif',
+        filename_plan = self._generate_filename('plan_curvature')
+        self.save_raster(self.plan_curvature, filename_plan,
                         f"(rad/100hm, mean={np.nanmean(self.plan_curvature):.4f})")
-        self.save_raster(self.profile_curvature, 'profile_curvature.tif',
+        filename_profile = self._generate_filename('profile_curvature')
+        self.save_raster(self.profile_curvature, filename_profile,
                         f"(rad/100hm, mean={np.nanmean(self.profile_curvature):.4f})")
         
         return self.plan_curvature, self.profile_curvature
     
-    def calculate_ruggedness(self, window_size=9, use_multiprocessing=True, force_recompute=False):
+    def calculate_ruggedness(self, window_size=9, use_multiprocessing=True):
         """
         Calculate terrain ruggedness
         
@@ -501,20 +471,19 @@ class OBIAPRADelineation:
             Window size in pixels (default 9, corresponding to 45m at 5m resolution)
         use_multiprocessing : bool
             If True, uses multiprocessing for tile-based calculation (default True)
-        force_recompute : bool
-            If True, skip cache and recompute (default False)
         
         Returns:
         --------
         ruggedness : np.ndarray
             Normalized ruggedness values (0-1)
         """
-        ruggedness_filename = self._cache_filename('ruggedness.tif', {"window_size": window_size})
-        cached = None if force_recompute else self._load_raster_if_exists(ruggedness_filename)
-        if cached is not None:
-            self.ruggedness = cached
+        # Check for cached file
+        filename = self._generate_filename('ruggedness', {'window_size': window_size})
+        cached_data = self._load_cached_raster(filename)
+        if cached_data is not None:
+            self.ruggedness = cached_data
             return self.ruggedness
-
+        
         self.log(f"\nCalculating ruggedness (window={window_size}x{window_size})...")
         
         dem = self.dem.copy()
@@ -547,7 +516,8 @@ class OBIAPRADelineation:
         ruggedness_norm = ruggedness / np.pi
         self.ruggedness = ruggedness_norm
         
-        self.save_raster(self.ruggedness, ruggedness_filename,
+        filename = self._generate_filename('ruggedness', {'window_size': window_size})
+        self.save_raster(self.ruggedness, filename,
                         f"(normalized 0-1, mean={np.nanmean(self.ruggedness):.4f})")
         
         return self.ruggedness
@@ -634,7 +604,7 @@ class OBIAPRADelineation:
         
         return ruggedness
     
-    def calculate_fold(self, window_size=3, force_recompute=False):
+    def calculate_fold(self, window_size=3):
         """
         Calculate fold (ridge/gully indicator)
         
@@ -645,20 +615,19 @@ class OBIAPRADelineation:
         -----------
         window_size : int
             Window size for calculation (default 3)
-        force_recompute : bool
-            If True, skip cache and recompute (default False)
         
         Returns:
         --------
         fold : np.ndarray
             Fold values
         """
-        fold_filename = self._cache_filename('fold.tif', {"window_size": window_size})
-        cached = None if force_recompute else self._load_raster_if_exists(fold_filename)
-        if cached is not None:
-            self.fold = cached
+        # Check for cached file
+        filename = self._generate_filename('fold', {'window_size': window_size})
+        cached_data = self._load_cached_raster(filename)
+        if cached_data is not None:
+            self.fold = cached_data
             return self.fold
-
+        
         self.log(f"\nCalculating fold...")
         
         dem = self.dem.copy()
@@ -678,7 +647,8 @@ class OBIAPRADelineation:
         fold = np.abs(dnx_dx + dny_dy)
         
         self.fold = fold
-        self.save_raster(self.fold, fold_filename,
+        filename = self._generate_filename('fold', {'window_size': window_size})
+        self.save_raster(self.fold, filename,
                         f"(mean={np.nanmean(self.fold):.6f})")
         
         return self.fold
@@ -746,7 +716,9 @@ class OBIAPRADelineation:
                             segments[ni, nj] = segment_id
                             queue.append((ni, nj))
     
-    def remove_small_objects(self, binary_array, min_size_m2=None, cluster_tolerance_cells=0):
+    def remove_small_objects(self, binary_array, min_size_m2=500, cluster_tolerance_cells=1):
+        # TODO: add this to extreme PRA, add individual pixel clustering given tolerance
+        # TODO: project to EPSG 2193
         """
         Remove objects smaller than minimum size
         
@@ -754,12 +726,10 @@ class OBIAPRADelineation:
         -----------
         binary_array : np.ndarray
             Binary mask
-        min_size_m2 : float, optional
-            Minimum size in square meters. If None, defaults to one cell
-            (removes only isolated pixels).
+        min_size_m2 : float
+            Minimum size in square meters (default 500)
         cluster_tolerance_cells : int
-            Maximum gap (in cells) to bridge when clustering nearby pixels.
-            Use 0 to keep strict connectivity (default).
+            Tolerance for clustering adjacent cells (default 1)
         
         Returns:
         --------
@@ -767,39 +737,131 @@ class OBIAPRADelineation:
             Binary array with small objects removed
         """
         cellsize = 5  # 5m resolution
-
-        if min_size_m2 is None:
-            min_size_m2 = cellsize**2
-
-        min_size_cells = max(1, int(round(min_size_m2 / (cellsize**2))))
-        cluster_tolerance_cells = max(0, int(cluster_tolerance_cells))
-
-        self.log(
-            "Removing objects smaller than "
-            f"{min_size_m2}m² ({min_size_cells} cells), "
-            f"cluster tolerance={cluster_tolerance_cells} cells..."
-        )
-
-        mask = binary_array.astype(bool)
-        structure = ndimage.generate_binary_structure(2, 2)
-
-        if cluster_tolerance_cells > 0:
-            structure = ndimage.iterate_structure(structure, cluster_tolerance_cells)
-            # Bridge small gaps so tight clusters count as one object
-            mask = ndimage.binary_closing(mask, structure=structure)
-
-        # Label connected components (8-connected)
-        labeled, num_features = ndimage.label(mask, structure=ndimage.generate_binary_structure(2, 2))
-
-        cleaned = mask.copy()
+        min_size_cells = int(min_size_m2 / (cellsize**2))
+        
+        self.log(f"Removing objects smaller than {min_size_m2}m² ({min_size_cells} cells)...")
+        
+        # Use dilate-erode to cluster nearby objects if tolerance > 1
+        if cluster_tolerance_cells > 1:
+            kernel = np.ones((cluster_tolerance_cells*2+1, cluster_tolerance_cells*2+1))
+            binary_array = ndimage.binary_dilation(binary_array.astype(bool), structure=kernel).astype(binary_array.dtype)
+        
+        # Label connected components
+        labeled, num_features = ndimage.label(binary_array)
+        
+        # Remove small objects
         for i in range(1, num_features + 1):
             size = np.sum(labeled == i)
             if size < min_size_cells:
-                cleaned[labeled == i] = False
-        # Fill enclosed holes so interior gaps inherit the surrounding region
-        cleaned = ndimage.binary_fill_holes(cleaned)
-
-        return cleaned.astype(binary_array.dtype)
+                binary_array[labeled == i] = 0
+        
+        return binary_array
+    
+    # =========================================================================
+    # CUSTOM PRA DELINEATION
+    # =========================================================================
+    
+    def delineate_pra_custom(self, slope_min, slope_max, ruggedness_limit,
+                             plan_curvature_limit, min_area_m2=500,
+                             cluster_tolerance_cells=1):
+        """
+        Delineate PRA using custom parameters
+        
+        Parameters:
+        -----------
+        slope_min : float
+            Minimum slope angle in degrees
+        slope_max : float
+            Maximum slope angle in degrees
+        ruggedness_limit : float
+            Maximum ruggedness threshold (0-1 normalized)
+        plan_curvature_limit : float
+            Maximum plan curvature magnitude (rad/100hm)
+        min_area_m2 : float
+            Minimum area in square meters (default 500)
+        cluster_tolerance_cells : int
+            Tolerance for clustering adjacent cells (default 1)
+        
+        Returns:
+        --------
+        pra_custom : np.ndarray
+            Binary PRA map for custom scenario
+        """
+        # Check for cached file
+        params = {
+            'slope_min': slope_min,
+            'slope_max': slope_max,
+            'ruggedness': ruggedness_limit,
+            'curvature': plan_curvature_limit,
+            'min_area': min_area_m2,
+            'cluster_tol': cluster_tolerance_cells
+        }
+        filename = self._generate_filename('PRA_custom_scenario', params)
+        cached_data = self._load_cached_raster(filename)
+        if cached_data is not None:
+            self.pra_custom = cached_data
+            self.log("PRA custom scenario loaded from cache.")
+            return self.pra_custom
+        
+        self.log("\n" + "="*60)
+        self.log("DELINEATING PRA FOR CUSTOM SCENARIO")
+        self.log("="*60)
+        self.log(f"Parameters:")
+        self.log(f"  - Slope: {slope_min}-{slope_max}°")
+        self.log(f"  - Ruggedness limit: {ruggedness_limit}")
+        self.log(f"  - Plan curvature limit: {plan_curvature_limit}")
+        self.log(f"  - Min area: {min_area_m2} m²")
+        self.log(f"  - Cluster tolerance: {cluster_tolerance_cells} cells")
+        
+        # Ensure all derivatives are calculated
+        if self.slope is None:
+            self.calculate_slope()
+        if self.aspect is None:
+            self.calculate_aspect()
+        if self.plan_curvature is None:
+            self.calculate_curvature()
+        if self.ruggedness is None:
+            self.calculate_ruggedness()
+        if self.fold is None:
+            self.calculate_fold()
+        
+        # Apply custom masks
+        self.log("Step 1: Applying custom slope mask...")
+        slope_mask = (self.slope >= slope_min) & (self.slope <= slope_max)
+        self.log(f"  - Cells in slope range: {np.sum(slope_mask)}")
+        
+        self.log("Step 2: Applying custom ruggedness mask...")
+        ruggedness_mask = self.ruggedness <= ruggedness_limit
+        slope_mask = slope_mask & ruggedness_mask
+        self.log(f"  - Cells after ruggedness filter: {np.sum(slope_mask)}")
+        
+        self.log("Step 3: Applying custom plan curvature mask...")
+        curvature_mask = np.abs(self.plan_curvature) <= plan_curvature_limit
+        slope_mask = slope_mask & curvature_mask
+        self.log(f"  - Cells after curvature filter: {np.sum(slope_mask)}")
+        
+        # Remove small objects and apply clustering
+        self.log("Step 4: Removing small objects and clustering...")
+        mask = self.remove_small_objects(
+            slope_mask.astype(np.uint8),
+            min_size_m2=min_area_m2,
+            cluster_tolerance_cells=cluster_tolerance_cells,
+        )
+        
+        # Apply forest mask if available
+        if self.forest is not None:
+            self.log("Step 5: Applying forest mask...")
+            mask = self._apply_forest_mask(mask)
+        
+        self.pra_custom = mask
+        output_path = self.save_raster(
+            mask.astype(float),
+            filename,
+            "(custom scenario, 1=PRA, 0=NoPRA)",
+        )
+        
+        self.log("PRA custom scenario delineation completed.")
+        return self.pra_custom
     
     # =========================================================================
     # PRA DELINEATION
@@ -823,6 +885,22 @@ class OBIAPRADelineation:
         pra_frequent : np.ndarray
             Binary PRA map for frequent scenario
         """
+        # Check for cached file
+        params = {
+            'slope_min': 30,
+            'slope_max': 60,
+            'ruggedness': 0.06,
+            'curvature': 6,
+            'min_area': 500,
+            'cluster_tol': 1
+        }
+        filename = self._generate_filename('PRA_frequent_scenario', params)
+        cached_data = self._load_cached_raster(filename)
+        if cached_data is not None:
+            self.pra_frequent = cached_data
+            self.log("PRA frequent scenario loaded from cache.")
+            return self.pra_frequent
+        
         self.log("\n" + "="*60)
         self.log("DELINEATING PRA FOR FREQUENT SCENARIO (30-60)")
         self.log("="*60)
@@ -857,11 +935,7 @@ class OBIAPRADelineation:
         self.log(f"  - Cells after curvature filter: {np.sum(slope_mask)}")
         
         # Step 4: Remove small objects (<500 m²)
-        slope_mask = self.remove_small_objects(
-            slope_mask.astype(np.uint8),
-            min_size_m2=500,
-            cluster_tolerance_cells=1,
-        )
+        slope_mask = self.remove_small_objects(slope_mask.astype(np.uint8), min_size_m2=500, cluster_tolerance_cells=1)
         
         # Step 5: Segmentation with weighted parameters
         self.log("Step 5: Segmenting into objects...")
@@ -873,7 +947,7 @@ class OBIAPRADelineation:
             susceptible_pra = self._apply_forest_mask(susceptible_pra)
         
         self.pra_frequent = susceptible_pra
-        self.save_raster(self.pra_frequent.astype(float), 'PRA_frequent_scenario.tif',
+        self.save_raster(self.pra_frequent.astype(float), filename,
                         "(frequent scenario, 1=PRA, 0=NoPRA)")
         
         self.log("PRA frequent scenario delineation completed.")
@@ -887,16 +961,30 @@ class OBIAPRADelineation:
         1. Identify slopes 28-60°
         2. Remove areas with high ruggedness (>0.08)
         3. Remove areas with high plan curvature (>6 rad/100hm)
-        4. Remove small areas (<500 m²)
-        5. Segment into objects
-        6. Region growing to merge similar objects
-        7. Classify forest coverage
+        4. Segment into objects
+        5. Region growing to merge similar objects
+        6. Classify forest coverage
         
         Returns:
         --------
         pra_extreme : np.ndarray
             Binary PRA map for extreme scenario
         """
+        # Check for cached file
+        params = {
+            'slope_min': 28,
+            'slope_max': 60,
+            'ruggedness': 0.08,
+            'curvature': 6,
+            'cluster_tol': 1
+        }
+        filename = self._generate_filename('PRA_extreme_scenario', params)
+        cached_data = self._load_cached_raster(filename)
+        if cached_data is not None:
+            self.pra_extreme = cached_data
+            self.log("PRA extreme scenario loaded from cache.")
+            return self.pra_extreme
+        
         self.log("\n" + "="*60)
         self.log("DELINEATING PRA FOR EXTREME SCENARIO (28-60°)")
         self.log("="*60)
@@ -930,29 +1018,22 @@ class OBIAPRADelineation:
         slope_mask = slope_mask & curvature_mask
         self.log(f"  - Cells after curvature filter: {np.sum(slope_mask)}")
         
-        # Step 4: Remove small objects (<500 m²)
-        slope_mask = self.remove_small_objects(
-            slope_mask.astype(np.uint8),
-            min_size_m2=500,
-            cluster_tolerance_cells=2,
-        )
-        
-        # Step 5: Segmentation
-        self.log("Step 5: Segmenting into objects...")
+        # Step 4: Segmentation
+        self.log("Step 4: Segmenting into objects...")
         segments = self.segment_objects(self.slope * slope_mask, 
                                        threshold_similarity=1.0)
         
-        # Step 6: Region growing to merge adjacent similar objects
-        self.log("Step 6: Region growing to merge similar objects...")
+        # Step 5: Region growing to merge adjacent similar objects
+        self.log("Step 5: Region growing to merge similar objects...")
         susceptible_pra = self._region_grow_merge(segments, slope_mask)
         
-        # Step 7: Forest masking
+        # Step 6: Forest masking
         if self.forest is not None:
-            self.log("Step 7: Classifying forest coverage...")
+            self.log("Step 6: Classifying forest coverage...")
             susceptible_pra = self._apply_forest_mask(susceptible_pra)
         
         self.pra_extreme = susceptible_pra
-        self.save_raster(self.pra_extreme.astype(float), 'PRA_extreme_scenario.tif',
+        self.save_raster(self.pra_extreme.astype(float), filename,
                         "(extreme scenario, 1=PRA, 0=NoPRA)")
         
         self.log("PRA extreme scenario delineation completed.")
@@ -1025,25 +1106,33 @@ class OBIAPRADelineation:
         pra_freq = self.delineate_pra_frequent()
         pra_extr = self.delineate_pra_extreme()
         
+        # Generate filenames with parameters
+        slope_file = self._generate_filename('slope_angle', {'filter_size': 5})
+        aspect_file = self._generate_filename('aspect_degrees')
+        aspect_sectors_file = self._generate_filename('aspect_sectors')
+        plan_curv_file = self._generate_filename('plan_curvature')
+        profile_curv_file = self._generate_filename('profile_curvature')
+        ruggedness_file = self._generate_filename('ruggedness', {'window_size': 9})
+        fold_file = self._generate_filename('fold', {'window_size': 3})
+        pra_freq_file = self._generate_filename('PRA_frequent_scenario', {
+            'slope_min': 30, 'slope_max': 60, 'ruggedness': 0.06,
+            'curvature': 6, 'min_area': 500, 'cluster_tol': 1
+        })
+        pra_extr_file = self._generate_filename('PRA_extreme_scenario', {
+            'slope_min': 28, 'slope_max': 60, 'ruggedness': 0.08,
+            'curvature': 6, 'cluster_tol': 1
+        })
+        
         results = {
-            'slope': os.path.join(
-                self.output_dir,
-                self._cache_filename('slope_angle.tif', {"filter_size": 5}),
-            ),
-            'aspect': os.path.join(self.output_dir, 'aspect_degrees.tif'),
-            'aspect_sectors': os.path.join(self.output_dir, 'aspect_sectors.tif'),
-            'plan_curvature': os.path.join(self.output_dir, 'plan_curvature.tif'),
-            'profile_curvature': os.path.join(self.output_dir, 'profile_curvature.tif'),
-            'ruggedness': os.path.join(
-                self.output_dir,
-                self._cache_filename('ruggedness.tif', {"window_size": 9}),
-            ),
-            'fold': os.path.join(
-                self.output_dir,
-                self._cache_filename('fold.tif', {"window_size": 3}),
-            ),
-            'pra_frequent': os.path.join(self.output_dir, 'PRA_frequent_scenario.tif'),
-            'pra_extreme': os.path.join(self.output_dir, 'PRA_extreme_scenario.tif'),
+            'slope': os.path.join(self.output_dir, slope_file),
+            'aspect': os.path.join(self.output_dir, aspect_file),
+            'aspect_sectors': os.path.join(self.output_dir, aspect_sectors_file),
+            'plan_curvature': os.path.join(self.output_dir, plan_curv_file),
+            'profile_curvature': os.path.join(self.output_dir, profile_curv_file),
+            'ruggedness': os.path.join(self.output_dir, ruggedness_file),
+            'fold': os.path.join(self.output_dir, fold_file),
+            'pra_frequent': os.path.join(self.output_dir, pra_freq_file),
+            'pra_extreme': os.path.join(self.output_dir, pra_extr_file),
         }
         
         self.log("\n" + "="*70)
@@ -1180,18 +1269,19 @@ if __name__ == "__main__":
     # python PRA_Buhler_OBIA.py <dem_path> [forest_path] [output_dir]
     
     if len(sys.argv) < 2:
-        print("Usage: python PRA_Buhler_OBIA.py <dem_path> [forest_path] [output_dir]")
+        print("Usage: python PRA_Buhler_OBIA.py <dem_path> [forest_path]")
         print("\nExample:")
-        print("  python PRA_Buhler_OBIA.py data/dem.tif data/forest.tif outputs/")
+        print("  python PRA_Buhler_OBIA.py data/dem.tif data/forest.tif")
         print("  python PRA_Buhler_OBIA.py data/dem.tif")
+        print("\nOutput will be saved to: <root>/cache/ATES/PRA")
+        print("Logs will be saved to: <root>/log")
         sys.exit(1)
     
     dem_path = sys.argv[1]
     forest_path = sys.argv[2] if len(sys.argv) > 2 else None
-    output_dir = sys.argv[3] if len(sys.argv) > 3 else './OBIA_outputs'
     
     # Initialize and run analysis
-    obia = OBIAPRADelineation(dem_path, forest_path, output_dir)
+    obia = OBIAPRADelineation(dem_path, forest_path)
     results = obia.run_full_analysis()
     
     print("\n✓ Analysis complete!")

@@ -66,7 +66,7 @@ pip install cupy-cuda11x  # Replace 11x with your CUDA version (e.g., 11.8)
 ### Usage
 ```python
 # Enable GPU mode at initialization
-obia = OBIAPRADelineation(dem_path, forest_path, output_dir, use_gpu=True)
+obia = OBIAPRADelineation(dem_path, forest_path, use_gpu=True)
 ```
 
 ### Limitations
