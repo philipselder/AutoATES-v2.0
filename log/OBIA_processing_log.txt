@@ -1,0 +1,35 @@
+============================================================
+OBIA PRA Delineation started at 2026-02-18 17:12:44.207402
+============================================================
+Numba JIT compilation available (10-50x speedup)
+Forest mask loaded: shape=(5879, 8655)
+DEM loaded: shape=(5879, 8655), nodata=None
+
+============================================================
+DELINEATING PRA FOR FREQUENT SCENARIO (30-60)
+============================================================
+
+Calculating slope angle...
+Saved: AP__slope_angle__filter_size=5__pd96b1ec9.tif (mean=21.02°)
+
+Calculating aspect...
+Saved: AP__aspect_degrees.tif (mean=172.20°)
+Saved: AP__aspect_sectors.tif (8 sectors: 0=N, 1=NE, 2=E, 3=SE, 4=S, 5=SW, 6=W, 7=NW)
+
+Calculating curvature...
+Saved: AP__plan_curvature.tif (rad/100hm, mean=-5.3263)
+Saved: AP__profile_curvature.tif (rad/100hm, mean=-6.2959)
+
+Calculating ruggedness (window=9x9)...
+  - Using Numba JIT-compiled calculation...
+Saved: AP__ruggedness__window_size=9__p5ddac9a6.tif (normalized 0-1, mean=0.0705)
+
+Calculating fold...
+Saved: AP__fold__window_size=3__p9eca541a.tif (mean=0.109173)
+Step 1: Selecting slopes 30-60...
+  - Cells in slope range: 20871932
+Step 2: Removing high ruggedness areas (>0.06)...
+  - Cells after ruggedness filter: 5545523
+Step 3: Removing high plan curvature areas (>6)...
+  - Cells after curvature filter: 822558
+Removing objects smaller than 500m² (20 cells)...

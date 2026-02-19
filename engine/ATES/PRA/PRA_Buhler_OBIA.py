@@ -1108,10 +1108,10 @@ class OBIAPRADelineation:
         
         # Generate filenames with parameters
         slope_file = self._generate_filename('slope_angle', {'filter_size': 5})
-        aspect_file = self._generate_filename('aspect_degrees')
-        aspect_sectors_file = self._generate_filename('aspect_sectors')
-        plan_curv_file = self._generate_filename('plan_curvature')
-        profile_curv_file = self._generate_filename('profile_curvature')
+        aspect_file = self._generate_filename('aspect_degrees', {})
+        aspect_sectors_file = self._generate_filename('aspect_sectors', {})
+        plan_curv_file = self._generate_filename('plan_curvature', {})
+        profile_curv_file = self._generate_filename('profile_curvature', {})
         ruggedness_file = self._generate_filename('ruggedness', {'window_size': 9})
         fold_file = self._generate_filename('fold', {'window_size': 3})
         pra_freq_file = self._generate_filename('PRA_frequent_scenario', {
