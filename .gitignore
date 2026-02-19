@@ -5,7 +5,7 @@ data/
 # Other common entries to include in a Python project gitignore:
 # Compiled Python files
 *.pyc
-engine\ATES\PRA\__pycache__
+engine/ATES/PRA/__pycache__/
 
 # Editor-specific files (VS Code)
 .vscode/
